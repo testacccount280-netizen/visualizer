@@ -144,6 +144,8 @@ function openWs() {
         if (m.ok) { authed = true; setState(); }
         else fail(m.err === 'no-secret-configured'
           ? 'На сервере не задан HOST_SECRET. Добавьте его в Environment на Render и перезапустите сервис.'
+          : m.err === 'blocked'
+          ? 'Слишком много неверных попыток. Подождите 15 минут.'
           : 'Неверный секрет передачи.');
       }
     } catch {}

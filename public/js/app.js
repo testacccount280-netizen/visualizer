@@ -161,14 +161,16 @@ function autoConnectPc() {
   if (S.tab === 'pc' && !src && !userStoppedPc && code) connectRelay(code);
   render();
 }
-$('btnPub').addEventListener('click', () => {
+function goPublic() {
   if (!PUB) return;
   S.code = '';
   codeIn.value = '';
   save();
   showErr('errPc', '');
   connectRelay(PUB);
-});
+}
+$('btnPub').addEventListener('click', goPublic);
+$('btnToPub').addEventListener('click', goPublic);
 
 // общий эфир: при первом открытии показываем его сразу
 fetch('/config', { cache: 'no-store' })
@@ -227,6 +229,8 @@ function render() {
   $('cardStop').hidden = !running;
   if (!running && S.code && !codeIn.value) codeIn.value = S.code;
   $('btnPub').hidden = !PUB;
+  // подключены к личному коду, а общий эфир есть: даём перейти одним нажатием
+  $('btnToPub').hidden = !(running && srcKind === 'relay' && PUB && src.code !== PUB);
   $('pcLead').textContent = PUB ? 'Свой компьютер: введите код со страницы ' : 'Введите код со страницы ';
 
   let dot = '', text = '';
@@ -253,6 +257,7 @@ function render() {
         : 'Подключаюсь к серверу…';
     }
   }
+  if (running && srcKind === 'relay' && dot === 'live' && src.rtt != null) text += ` · пинг ${Math.round(src.rtt)} мс`;
   if (running && dot === 'live') text += '<br><span class="sub">Нажмите на кольцо, чтобы скрыть интерфейс</span>';
   $('status').innerHTML = (dot ? `<span class="dot ${dot}"></span>` : '') + text;
   if (!running && document.body.classList.contains('immersive')) setImmersive(false);

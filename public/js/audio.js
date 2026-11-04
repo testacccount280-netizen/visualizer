@@ -138,6 +138,7 @@ export class RelaySource {
     this.peak = new Float32Array(BANDS).fill(-100);
     this.pending = false;
     this.peakHold = true;
+    this.rtt = null; // задержка до сервера, мс (сглаженная)
     this.last = 0;
     this.hostOn = false;
     this.closed = false;
@@ -154,6 +155,10 @@ export class RelaySource {
     ws.onopen = () => {
       this.retry = 1000;
       this.onStatus(this.hostOn ? 'live' : 'waiting');
+      const ping = () => ws.readyState === 1 && ws.send(JSON.stringify({ t: 'ping', ts: performance.now() }));
+      ping();
+      clearInterval(this.pinger);
+      this.pinger = setInterval(ping, 2500);
     };
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') {
@@ -161,6 +166,10 @@ export class RelaySource {
           const m = JSON.parse(e.data);
           if (m.t === 'host') {
             this.hostOn = !!m.on;
+            this.onStatus(this.hostOn ? 'live' : 'waiting');
+          } else if (m.t === 'pong' && typeof m.ts === 'number') {
+            const r = performance.now() - m.ts;
+            this.rtt = this.rtt == null ? r : this.rtt * 0.6 + r * 0.4;
             this.onStatus(this.hostOn ? 'live' : 'waiting');
           }
         } catch {}
@@ -180,6 +189,7 @@ export class RelaySource {
       this.last = performance.now();
     };
     ws.onclose = () => {
+      clearInterval(this.pinger);
       if (this.closed) return;
       this.hostOn = false;
       this.onStatus('connecting');
@@ -201,6 +211,7 @@ export class RelaySource {
 
   stop() {
     this.closed = true;
+    clearInterval(this.pinger);
     try { this.ws.close(); } catch {}
   }
 }

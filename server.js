@@ -81,7 +81,18 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 512 });
 const ipCount = new Map();
-const ipOf = (req) => (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?';
+const ipOf = (req) =>
+  String(req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+  req.socket.remoteAddress || '?';
+
+// Защита пароля передачи от перебора: после AUTH_MAX_FAILS неверных попыток IP блокируется на AUTH_BLOCK_MS.
+const AUTH_MAX_FAILS = 8;
+const AUTH_BLOCK_MS = 15 * 60 * 1000;
+const authFails = new Map(); // ip -> { n, until }
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, f] of authFails) if (f.until && f.until < now) authFails.delete(ip);
+}, 60_000).unref();
 
 server.on('upgrade', (req, socket, head) => {
   const u = new URL(req.url || '/', 'http://x');
@@ -159,12 +170,21 @@ function onConnect(ws, code, role, ip) {
     const timer = setTimeout(() => ws.close(4003, 'auth timeout'), 5000);
     ws.once('message', (data, isBinary) => {
       clearTimeout(timer);
+      const rec = authFails.get(ip) || { n: 0, until: 0 };
+      if (rec.until > Date.now()) {
+        sendJson(ws, { t: 'auth', ok: false, err: 'blocked' });
+        return ws.close(4003, 'blocked');
+      }
       let ok = false;
       try { ok = !isBinary && JSON.parse(data.toString()).t === 'auth' && secretOk(JSON.parse(data.toString()).secret); } catch {}
       if (!ok) {
+        rec.n++;
+        if (rec.n >= AUTH_MAX_FAILS) { rec.until = Date.now() + AUTH_BLOCK_MS; rec.n = 0; }
+        authFails.set(ip, rec);
         sendJson(ws, { t: 'auth', ok: false });
         return ws.close(4003, 'bad secret');
       }
+      authFails.delete(ip);
       sendJson(ws, { t: 'auth', ok: true });
       attachHost(ws, r, code);
     });

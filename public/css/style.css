@@ -41,7 +41,12 @@ button { cursor: pointer; }
   --size: 1;
   width: calc(min(92vw, 56vh, 560px) * var(--size));
   height: calc(min(92vw, 56vh, 560px) * var(--size));
+  transition: width .25s, height .25s;
 }
+.top, .status, .card { transition: opacity .25s; }
+.immersive .top, .immersive .status, .immersive .card { opacity: 0; pointer-events: none; }
+.immersive #rings { width: calc(min(98vw, 80vh, 900px) * var(--size)); height: calc(min(98vw, 80vh, 900px) * var(--size)); }
+.status .sub { font-size: 12px; opacity: .7; }
 
 .status { text-align: center; color: var(--dim); font-size: 13px; min-height: 18px; }
 .status b { color: var(--fg); font-weight: 600; }

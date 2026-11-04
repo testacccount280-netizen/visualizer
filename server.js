@@ -115,6 +115,15 @@ function getRoom(code) {
   return r;
 }
 const sendJson = (ws, o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
+// Замер задержки: клиент шлёт {t:'ping',ts}, сервер сразу возвращает {t:'pong',ts}
+function handlePing(ws, data, isBinary) {
+  if (isBinary || data.length > 64) return false;
+  try {
+    const m = JSON.parse(data.toString());
+    if (m && m.t === 'ping') { sendJson(ws, { t: 'pong', ts: m.ts }); return true; }
+  } catch {}
+  return false;
+}
 function cleanup(code) {
   const r = rooms.get(code);
   if (r && !r.host && r.viewers.size === 0) rooms.delete(code);
@@ -130,6 +139,7 @@ function attachHost(ws, r, code) {
   notifyHost(r);
   let bucket = 0, ts = Date.now();
   ws.on('message', (data, isBinary) => {
+    if (handlePing(ws, data, isBinary)) return;
     if (!isBinary || data.length < 10 || data.length > 32) return;
     const now = Date.now(); // не больше ~120 пакетов/с
     if (now - ts > 1000) { ts = now; bucket = 0; }
@@ -194,7 +204,7 @@ function onConnect(ws, code, role, ip) {
     r.viewers.add(ws);
     sendJson(ws, { t: 'host', on: !!r.host });
     notifyHost(r);
-    ws.on('message', () => {}); // зрители ничего не шлют
+    ws.on('message', (data, isBinary) => { handlePing(ws, data, isBinary); }); // зрители шлют только ping
   }
 }
 

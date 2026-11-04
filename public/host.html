@@ -13,14 +13,35 @@
   .bars { height: 70px; display: flex; gap: 5px; align-items: flex-end; }
   .bars i { flex: 1; background: var(--acc); border-radius: 3px; height: 2px; opacity: .9; }
   .muted { color: var(--dim); font-size: 13.5px; margin: 0; }
+  .pub { display: flex; flex-direction: column; gap: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; font-size: 14px; }
+  .pub label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+  .pub input[type=radio] { margin-top: 3px; accent-color: var(--acc); }
+  code { color: var(--fg); background: #1d1d25; padding: 1px 5px; border-radius: 5px; }
+  .secret { background: #0b0b0f; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; width: 100%; }
+  .secret:focus { outline: 1px solid var(--acc); }
   .err { color: #ff7a7a; font-size: 14px; margin: 0; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Звук этого компьютера → Skycoder</h1>
+  <div id="pubBox" class="pub" hidden>
+    <label><input type="radio" name="m" value="public" checked> Общий эфир: все, кто откроет мини-апп, видят ваш звук</label>
+    <label><input type="radio" name="m" value="private"> Личная комната: только по коду</label>
+    <input type="password" id="secret" class="secret" placeholder="Секрет передачи (HOST_SECRET с Render)" autocomplete="off">
+  </div>
+  <div id="noPub" class="pub" hidden>
+    <b>Общий эфир не включён</b>
+    <span class="muted">Сейчас слушать можно только по коду. Чтобы любой, кто откроет мини-апп, сразу слышал ваш звук без кода: на Render откройте сервис → <b>Environment</b> и добавьте <code>PUBLIC_ROOM</code> (любые 6 символов A–Z, 0–9, например EFIR01) и <code>HOST_SECRET</code> (ваш пароль передачи). После перезапуска обновите эту страницу.</span>
+  </div>
+  <div id="privBox" style="display:flex;flex-direction:column;gap:16px">
   <div class="code" id="code">······</div>
+  <div style="display:flex;gap:8px">
+    <button class="btn ghost" id="copyCode" style="flex:1">Копировать код</button>
+    <button class="btn ghost" id="copyLink" style="flex:1">Копировать ссылку</button>
+  </div>
   <p class="muted">Введите этот код в мини-аппе на вкладке «Компьютер». Код постоянный для этого браузера.</p>
+  </div>
   <button class="btn" id="start">Начать трансляцию звука</button>
   <p class="err" id="err" hidden></p>
   <div class="bars" id="bars"></div>
@@ -45,6 +66,14 @@ if (!CODE_RE.test(code)) {
   try { localStorage.setItem('skycoder.hostcode', code); } catch {}
 }
 $('code').textContent = code;
+const copy = async (btn, text) => {
+  const old = btn.textContent;
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Скопировано'; } catch { btn.textContent = 'Не вышло, выделите вручную'; }
+  setTimeout(() => (btn.textContent = old), 1500);
+};
+$('copyCode').addEventListener('click', (e) => copy(e.target, code));
+// ссылка открывает сайт сразу на вкладке «Компьютер» с этим кодом
+$('copyLink').addEventListener('click', (e) => copy(e.target, `${location.origin}/?code=${code}`));
 
 const bars = $('bars');
 for (let i = 0; i < 10; i++) bars.appendChild(document.createElement('i'));
@@ -56,20 +85,71 @@ if (!canDisplay()) {
   $('err').textContent = 'Этот браузер не умеет захватывать звук экрана. Откройте страницу в Chrome или Edge на компьютере.';
 }
 
-let src = null, ws = null, ticker = null, viewers = 0, stopping = false;
+let src = null, ws = null, ticker = null, viewers = 0, stopping = false, authed = false;
+
+// общий эфир (если на сервере задан PUBLIC_ROOM)
+let pubRoom = null, mode = 'private';
+try { mode = localStorage.getItem('skycoder.hostmode') || 'private'; } catch {}
+const isPublic = () => mode === 'public' && !!pubRoom;
+const room = () => (isPublic() ? pubRoom : code);
+function applyMode() {
+  $('privBox').style.display = isPublic() ? 'none' : 'flex';
+  $('secret').style.display = isPublic() ? '' : 'none';
+  document.querySelectorAll('input[name=m]').forEach((r) => (r.checked = r.value === (isPublic() ? 'public' : 'private')));
+}
+try { $('secret').value = localStorage.getItem('skycoder.hostsecret') || ''; } catch {}
+fetch('/config', { cache: 'no-store' }).then((r) => r.json()).then((c) => {
+  if (c && /^[A-Z0-9]{6}$/.test(c.room || '')) {
+    pubRoom = c.room;
+    $('pubBox').hidden = false;
+    if (!localStorage.getItem('skycoder.hostmode')) mode = 'public';
+    applyMode();
+  } else {
+    $('noPub').hidden = false;
+  }
+}).catch(() => {});
+document.querySelectorAll('input[name=m]').forEach((r) =>
+  r.addEventListener('change', () => {
+    if (src) { r.checked = false; applyMode(); return; } // менять режим можно только на остановленной трансляции
+    mode = r.value;
+    try { localStorage.setItem('skycoder.hostmode', mode); } catch {}
+    applyMode();
+  }));
+applyMode();
 
 function setState() {
   $('state').textContent = !src ? 'Не запущено.'
-    : `Транслирую звук. Подключено устройств: ${viewers}.`;
+    : isPublic() && !authed ? 'Подключаюсь к общему эфиру…'
+    : `Транслирую звук${isPublic() ? ' в общий эфир' : ''}. Подключено устройств: ${viewers}.`;
+}
+function fail(msg) {
+  $('err').hidden = false;
+  $('err').textContent = msg;
+  stop(true);
+  setState();
 }
 
 function openWs() {
-  ws = new WebSocket(wsUrl('host', code));
+  authed = !isPublic();
+  ws = new WebSocket(wsUrl('host', room()));
   ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    if (isPublic()) ws.send(JSON.stringify({ t: 'auth', secret: $('secret').value }));
+  };
   ws.onmessage = (e) => {
-    try { const m = JSON.parse(e.data); if (m.t === 'viewers') { viewers = m.n; setState(); } } catch {}
+    try {
+      const m = JSON.parse(e.data);
+      if (m.t === 'viewers') { viewers = m.n; setState(); }
+      if (m.t === 'auth') {
+        if (m.ok) { authed = true; setState(); }
+        else fail(m.err === 'no-secret-configured'
+          ? 'На сервере не задан HOST_SECRET. Добавьте его в Environment на Render и перезапустите сервис.'
+          : 'Неверный секрет передачи.');
+      }
+    } catch {}
   };
   ws.onclose = (e) => {
+    if (e.code === 4003) return; // отказ в доступе: сообщение уже показано
     if (stopping || e.code === 4001) {
       if (e.code === 4001) { $('state').textContent = 'Эта комната открыта в другом окне — трансляция здесь остановлена.'; stop(true); }
       return;
@@ -91,6 +171,10 @@ function stop(silent) {
 $('start').addEventListener('click', async () => {
   if (src) return stop();
   $('err').hidden = true;
+  if (isPublic()) {
+    if (!$('secret').value) { $('err').hidden = false; $('err').textContent = 'Введите секрет передачи (HOST_SECRET).'; return; }
+    try { localStorage.setItem('skycoder.hostsecret', $('secret').value); } catch {}
+  }
   try {
     src = await startDisplay();
   } catch (e) {
@@ -114,7 +198,7 @@ $('start').addEventListener('click', async () => {
     if (!src) return;
     src.read(db);
     for (let i = 0; i < 10; i++) pkt[i] = dbToByte(db[i]);
-    if (ws && ws.readyState === 1) ws.send(pkt);
+    if (authed && ws && ws.readyState === 1) ws.send(pkt);
     if (!document.hidden) barEls.forEach((b, i) => (b.style.height = Math.max(2, (pkt[i] / 255) * 70) + 'px'));
   };
 });

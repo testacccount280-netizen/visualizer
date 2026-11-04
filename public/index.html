@@ -18,7 +18,7 @@
     <button class="icon-btn" id="gear" aria-label="Настройки">⚙</button>
   </div>
 
-  <div class="stage"><svg id="rings" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 388 388"></svg></div>
+  <div class="stage"><svg id="rings" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 388 388"></svg></div>
 
   <div class="status" id="status"></div>
 
@@ -31,7 +31,8 @@
 
   <!-- Режим: звук компьютера -->
   <div class="card" id="cardPc" hidden>
-    <p>Введите код со страницы <b id="hostUrl" style="color:var(--fg)"></b>, открытой на компьютере.</p>
+    <button class="btn" id="btnPub" hidden>Смотреть прямой эфир</button>
+    <p><span id="pcLead">Введите код со страницы </span><b id="hostUrl" style="color:var(--fg)"></b>, открытой на компьютере.</p>
     <div class="row">
       <input class="code-in" id="codeIn" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="КОД">
       <button class="btn" id="btnConnect">Подключить</button>

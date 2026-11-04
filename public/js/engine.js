@@ -10,16 +10,59 @@ export const TOP_DB = -22;
 // Музыка к высоким частотам тише на десятки dB; поднимаем верхние полосы, чтобы они не были «мёртвыми».
 export const TILT_DB = 2.5; // dB на номер полосы
 
+// Авто-диапазон: потолок падает на столько dB в секунду; ниже MIN_CEIL_DB потолок не опускаем,
+// чтобы шум тишины не раздувался до максимума.
+export const CEIL_FALL_DB_S = 4;
+export const MIN_CEIL_DB = -90;
+// «Пол» диапазона: недавний минимум полосы (между ударами). Окно уровней = потолок - пол, но не уже MIN_RANGE_DB
+// и не шире «Чувствительности». У плотных, громких треков разница между пиком и провалом всего несколько dB:
+// так окно сжимается, и каждый удар заметно «вспыхивает» вместо постоянного свечения.
+export const FLOOR_RISE_DB_S = 6;
+export const MIN_RANGE_DB = 8;
+
 export function dbToLevel(db, sens, band) {
   return clamp(1 + (db + TILT_DB * band - TOP_DB) / sens, 0, 1);
 }
 
 export class Visualizer {
   constructor() {
+    this.floorTrack = true;
     this.reset();
   }
 
+  /**
+   * dB полос -> уровни 0..1.
+   * autoRange=true: у каждой полосы свой «потолок» = недавний максимум (медленно оседает),
+   * поэтому тихий микрофон и громкий захват ПК выглядят одинаково, а каждый бит доходит до 1.
+   * autoRange=false: фиксированная шкала как в Rainmeter (потолок TOP_DB, наклон спектра TILT_DB).
+   */
+  mapLevels(dt, db, sens, autoRange, out) {
+    for (let i = 0; i < 10; i++) {
+      if (autoRange) {
+        let c = this.ceil[i];
+        c = db[i] > c ? db[i] : c - (CEIL_FALL_DB_S * dt) / 1000;
+        if (c < MIN_CEIL_DB) c = MIN_CEIL_DB;
+        this.ceil[i] = c;
+        let range = sens;
+        if (this.floorTrack) {
+          let f = this.floor[i];
+          f = db[i] < f ? db[i] : f + (FLOOR_RISE_DB_S * dt) / 1000;
+          if (f < MIN_CEIL_DB) f = MIN_CEIL_DB;
+          if (f > c) f = c;
+          this.floor[i] = f;
+          range = clamp(c - f, Math.min(MIN_RANGE_DB, sens), sens);
+        }
+        out[i] = clamp(1 + (db[i] - c) / range, 0, 1);
+      } else {
+        out[i] = dbToLevel(db[i], sens, i);
+      }
+    }
+    return out;
+  }
+
   reset() {
+    this.ceil = new Float32Array(10).fill(MIN_CEIL_DB);
+    this.floor = new Float32Array(10).fill(MIN_CEIL_DB);
     this.sm = new Float32Array(10); // сглаженные уровни 10 полос (0..1)
     this.peak = [0, 0, 0, 0];
     this.norm = [0, 0, 0, 0];

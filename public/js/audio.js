@@ -133,6 +133,11 @@ export class RelaySource {
     this.code = code;
     this.onStatus = onStatus || (() => {});
     this.db = new Float32Array(BANDS).fill(-100);
+    // Сеть доставляет пакеты неровно (по 2-3 сразу, потом пауза). Между кадрами копим максимум пакетов,
+    // чтобы удар не терялся, если вслед за ним в тот же кадр пришёл более тихий пакет.
+    this.peak = new Float32Array(BANDS).fill(-100);
+    this.pending = false;
+    this.peakHold = true;
     this.last = 0;
     this.hostOn = false;
     this.closed = false;
@@ -163,7 +168,15 @@ export class RelaySource {
       }
       const b = new Uint8Array(e.data);
       if (b.length < BANDS) return;
-      for (let i = 0; i < BANDS; i++) this.db[i] = byteToDb(b[i]);
+      if (this.peakHold) {
+        for (let i = 0; i < BANDS; i++) {
+          const v = byteToDb(b[i]);
+          this.peak[i] = this.pending && this.peak[i] > v ? this.peak[i] : v;
+        }
+        this.pending = true;
+      } else {
+        for (let i = 0; i < BANDS; i++) this.db[i] = byteToDb(b[i]);
+      }
       this.last = performance.now();
     };
     ws.onclose = () => {
@@ -177,6 +190,10 @@ export class RelaySource {
   }
 
   read(out) {
+    if (this.pending) {
+      for (let i = 0; i < BANDS; i++) this.db[i] = this.peak[i];
+      this.pending = false;
+    }
     const stale = performance.now() - this.last > 500;
     for (let i = 0; i < BANDS; i++) out[i] = stale ? -100 : this.db[i];
     return out;

@@ -1,5 +1,5 @@
 import { RINGS, MODES, THEMES } from './data.js';
-import { Visualizer, dbToLevel, demoLevels, ringColor } from './engine.js';
+import { Visualizer, demoLevels, ringColor } from './engine.js';
 import { startMic, startDisplay, RelaySource, canMic, canDisplay, CODE_RE } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
@@ -19,7 +19,7 @@ if (tg) {
 /* ---------- настройки ---------- */
 const KEY = 'skycoder.v1';
 const DEFAULTS = {
-  mode: 8, theme: 6, sens: 28, speed: 1, size: 1,
+  mode: 8, theme: 6, sens: 16, speed: 1, size: 1,
   ag: { device: true, pc: true },
   haptic: false, tab: 'device', code: '',
 };
@@ -31,7 +31,9 @@ function merge(raw) {
     if (o && typeof o === 'object') S = { ...S, ...o, ag: { ...S.ag, ...(o.ag || {}) } };
   } catch {}
 }
-try { merge(localStorage.getItem(KEY)); } catch {}
+let hadSaved = false; // были ли у пользователя сохранённые настройки (для выбора вкладки по умолчанию)
+try { hadSaved = !!localStorage.getItem(KEY); merge(localStorage.getItem(KEY)); } catch {}
+let PUB = null; // код общего эфира с сервера (/config)
 
 const cloudOk = !!(tg && tg.CloudStorage && tg.isVersionAtLeast && tg.isVersionAtLeast('6.9') && inTg);
 function save() {
@@ -39,10 +41,20 @@ function save() {
   try { localStorage.setItem(KEY, json); } catch {}
   if (cloudOk) { try { tg.CloudStorage.setItem(KEY, json); } catch {} }
 }
+// Код компьютера из ссылки (?code=XXXXXX) или из параметра startapp мини-аппа
+function applyParamCode() {
+  let c = '';
+  try { c = new URLSearchParams(location.search).get('code') || ''; } catch {}
+  if (!c && tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) c = tg.initDataUnsafe.start_param;
+  c = c.toUpperCase();
+  if (CODE_RE.test(c)) { S.code = c; S.tab = 'pc'; save(); }
+}
+applyParamCode();
+
 if (cloudOk) {
   try {
     tg.CloudStorage.getItem(KEY, (err, val) => {
-      if (!err && val) { merge(val); applyAll(); autoConnectPc(); }
+      if (!err && val) { hadSaved = true; merge(val); applyParamCode(); applyAll(); autoConnectPc(); }
     });
   } catch {}
 }
@@ -66,6 +78,8 @@ const els = RINGS.map((r) => {
   return c;
 });
 
+const lastCol = new Array(RINGS.length).fill('');
+const lastTr = new Array(RINGS.length).fill('');
 const viz = new Visualizer();
 const dbBuf = new Float32Array(10);
 const lv = new Float32Array(10);
@@ -74,6 +88,7 @@ const lv = new Float32Array(10);
 let src = null;
 let srcKind = null; // 'mic' | 'direct' | 'relay'
 let relayState = 'connecting';
+let relaySince = 0;
 let userStoppedPc = false;
 let wakeLock = null;
 
@@ -132,12 +147,39 @@ $('btnDirect').addEventListener('click', async () => {
 function connectRelay(code) {
   userStoppedPc = false;
   relayState = 'connecting';
-  useSource(new RelaySource(code, (st) => { relayState = st; render(); }), 'relay');
+  relaySince = performance.now();
+  useSource(new RelaySource(code, (st) => {
+    relayState = st;
+    relaySince = st === 'connecting' ? relaySince || performance.now() : 0;
+    render();
+  }), 'relay');
 }
+// куда подключаться на вкладке «Компьютер»: свой код, иначе общий эфир
+const pcTarget = () => (CODE_RE.test(S.code) ? S.code : PUB);
 function autoConnectPc() {
-  if (S.tab === 'pc' && !src && !userStoppedPc && CODE_RE.test(S.code)) connectRelay(S.code);
+  const code = pcTarget();
+  if (S.tab === 'pc' && !src && !userStoppedPc && code) connectRelay(code);
   render();
 }
+$('btnPub').addEventListener('click', () => {
+  if (!PUB) return;
+  S.code = '';
+  codeIn.value = '';
+  save();
+  showErr('errPc', '');
+  connectRelay(PUB);
+});
+
+// общий эфир: при первом открытии показываем его сразу
+fetch('/config', { cache: 'no-store' })
+  .then((r) => r.json())
+  .then((c) => {
+    PUB = c && CODE_RE.test(c.room || '') ? c.room : null;
+    if (PUB && !hadSaved && !CODE_RE.test(S.code)) S.tab = 'pc';
+    applyAll();
+    autoConnectPc();
+  })
+  .catch(() => {});
 
 const codeIn = $('codeIn');
 codeIn.addEventListener('input', () => {
@@ -168,6 +210,7 @@ function setTab(t) {
   if (S.tab === t) return;
   stopSource();
   S.tab = t;
+  userStoppedPc = false;
   save();
   applyAll();
   autoConnectPc();
@@ -183,6 +226,8 @@ function render() {
   $('cardPc').hidden = running || S.tab !== 'pc';
   $('cardStop').hidden = !running;
   if (!running && S.code && !codeIn.value) codeIn.value = S.code;
+  $('btnPub').hidden = !PUB;
+  $('pcLead').textContent = PUB ? 'Свой компьютер: введите код со страницы ' : 'Введите код со страницы ';
 
   let dot = '', text = '';
   if (!running) {
@@ -192,12 +237,41 @@ function render() {
   } else if (srcKind === 'direct') {
     dot = 'live'; text = '<b>Звук этого компьютера</b> (захват экрана)';
   } else if (srcKind === 'relay') {
-    if (relayState === 'live') { dot = 'live'; text = `<b>Компьютер подключён</b> · код ${src.code}`; }
-    else if (relayState === 'waiting') { dot = 'warn'; text = `Код ${src.code} · компьютер сейчас не транслирует звук`; }
-    else { dot = 'warn'; text = 'Подключаюсь к серверу…'; }
+    const pub = !!PUB && src.code === PUB;
+    if (relayState === 'live') {
+      dot = 'live';
+      text = pub ? '<b>Прямой эфир</b> · звук компьютера владельца' : `<b>Компьютер подключён</b> · код ${src.code}`;
+    } else if (relayState === 'waiting') {
+      dot = 'warn';
+      text = pub ? 'Эфир сейчас не идёт: владелец не транслирует звук. Откроется сам, когда начнёт.'
+                 : `Код ${src.code} · компьютер сейчас не транслирует звук`;
+    }
+    else {
+      dot = 'warn';
+      text = relaySince && performance.now() - relaySince > 4000
+        ? 'Сервер просыпается (бесплатный Render), это может занять до минуты…'
+        : 'Подключаюсь к серверу…';
+    }
   }
+  if (running && dot === 'live') text += '<br><span class="sub">Нажмите на кольцо, чтобы скрыть интерфейс</span>';
   $('status').innerHTML = (dot ? `<span class="dot ${dot}"></span>` : '') + text;
+  if (!running && document.body.classList.contains('immersive')) setImmersive(false);
 }
+setInterval(() => { if (srcKind === 'relay' && relayState === 'connecting') render(); }, 1000);
+
+/* режим «только кольцо»: тап по кольцу прячет интерфейс (+ полный экран в Telegram) */
+function setImmersive(on) {
+  document.body.classList.toggle('immersive', on);
+  try {
+    if (tg && inTg && tg.isVersionAtLeast && tg.isVersionAtLeast('8.0')) {
+      if (on) tg.requestFullscreen(); else tg.exitFullscreen();
+    }
+  } catch {}
+}
+document.querySelector('.stage').addEventListener('click', () => {
+  if (!src || sheet.classList.contains('on')) return;
+  setImmersive(!document.body.classList.contains('immersive'));
+});
 
 /* панель настроек */
 const sheet = $('sheet'), backdrop = $('backdrop');
@@ -282,7 +356,7 @@ function frame(now) {
 
   if (src) {
     src.read(dbBuf);
-    for (let i = 0; i < 10; i++) lv[i] = dbToLevel(dbBuf[i], S.sens, i);
+    viz.mapLevels(dt, dbBuf, S.sens, !!S.ag[S.tab], lv);
   } else {
     demoLevels(now, lv);
   }
@@ -291,8 +365,12 @@ function frame(now) {
   const th = THEMES[S.theme - 1];
   for (let i = 0; i < RINGS.length; i++) {
     const r = RINGS[i];
-    els[i].setAttribute(r.fill ? 'fill' : 'stroke', ringColor(r.set ? th.cb : th.c, viz.lvl[r.level]));
-    if (r.rot) els[i].setAttribute('transform', `rotate(${viz.deg[i].toFixed(2)} 194 194)`);
+    const col = ringColor(r.set ? th.cb : th.c, viz.lvl[r.level]);
+    if (col !== lastCol[i]) { lastCol[i] = col; els[i].setAttribute(r.fill ? 'fill' : 'stroke', col); }
+    if (r.rot) {
+      const tr = `rotate(${viz.deg[i].toFixed(2)} 194 194)`;
+      if (tr !== lastTr[i]) { lastTr[i] = tr; els[i].setAttribute('transform', tr); }
+    }
   }
 
   if (S.haptic && src && inTg && tg.HapticFeedback && viz.norm[0] - viz.avg[0] > 0.22 && now - lastHap > 140) {

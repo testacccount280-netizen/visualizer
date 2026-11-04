@@ -1,1 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Skycoder</title>
+<link rel="stylesheet" href="/css/style.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<div id="app">
+  <div class="top">
+    <div class="seg" role="tablist">
+      <button id="tabDevice" role="tab">Это устройство</button>
+      <button id="tabPc" role="tab">Компьютер</button>
+    </div>
+    <button class="icon-btn" id="gear" aria-label="Настройки">⚙</button>
+  </div>
 
+  <div class="stage"><svg id="rings" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 388 388"></svg></div>
+
+  <div class="status" id="status"></div>
+
+  <!-- Режим: звук этого устройства -->
+  <div class="card" id="cardDevice" hidden>
+    <p>Кольцо реагирует на звук, который слышит микрофон этого устройства: музыка из его динамиков, колонки рядом.</p>
+    <p class="err" id="errDevice" hidden></p>
+    <button class="btn" id="btnMic">Включить микрофон</button>
+  </div>
+
+  <!-- Режим: звук компьютера -->
+  <div class="card" id="cardPc" hidden>
+    <p>Введите код со страницы <b id="hostUrl" style="color:var(--fg)"></b>, открытой на компьютере.</p>
+    <div class="row">
+      <input class="code-in" id="codeIn" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="КОД">
+      <button class="btn" id="btnConnect">Подключить</button>
+    </div>
+    <p class="err" id="errPc" hidden></p>
+    <button class="btn ghost" id="btnDirect" hidden>Захватить звук этого компьютера напрямую</button>
+    <details>
+      <summary>Как получить код</summary>
+      <ol>
+        <li>На компьютере откройте в Chrome или Edge: <code class="hostLink"></code></li>
+        <li>Нажмите «Начать», выберите «Весь экран» и включите «Поделиться звуком».</li>
+        <li>Введите показанный код здесь. Он запоминается, второй раз вводить не нужно.</li>
+      </ol>
+    </details>
+  </div>
+
+  <div class="card" id="cardStop" hidden>
+    <button class="btn ghost" id="btnStop">Остановить</button>
+  </div>
+</div>
+
+<div class="backdrop" id="backdrop"></div>
+<div class="sheet" id="sheet">
+  <h3>Режим</h3>
+  <div class="chips" id="modeChips"></div>
+  <p class="tip" id="modeTip"></p>
+  <h3>Цвета</h3>
+  <div class="chips" id="themeChips"></div>
+  <h3>Параметры</h3>
+  <div class="field"><label for="sens">Чувствительность</label><output id="sensO"></output>
+    <input type="range" id="sens" min="6" max="60" step="1"></div>
+  <div class="field"><label for="speed">Скорость вращения</label><output id="speedO"></output>
+    <input type="range" id="speed" min="0.2" max="3" step="0.1"></div>
+  <div class="field"><label for="size">Размер</label><output id="sizeO"></output>
+    <input type="range" id="size" min="0.5" max="1.2" step="0.05"></div>
+  <label class="switch"><span>Авто-усиление (подстраивается под громкость)</span><input type="checkbox" id="ag"></label>
+  <label class="switch" id="hapticRow"><span>Вибрация на бит</span><input type="checkbox" id="haptic"></label>
+</div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

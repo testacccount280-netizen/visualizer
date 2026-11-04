@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skycoder · звук компьютера</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  body { overflow: auto; }
+  .wrap { max-width: 460px; margin: 0 auto; padding: 28px 16px 40px; display: flex; flex-direction: column; gap: 16px; }
+  h1 { margin: 0; font-size: 20px; }
+  .code { font-size: 44px; letter-spacing: .22em; font-weight: 800; text-align: center; color: var(--acc); padding: 14px 0 14px .22em; background: var(--card); border: 1px solid var(--line); border-radius: 16px; user-select: all; }
+  .bars { height: 70px; display: flex; gap: 5px; align-items: flex-end; }
+  .bars i { flex: 1; background: var(--acc); border-radius: 3px; height: 2px; opacity: .9; }
+  .muted { color: var(--dim); font-size: 13.5px; margin: 0; }
+  .err { color: #ff7a7a; font-size: 14px; margin: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Звук этого компьютера → Skycoder</h1>
+  <div class="code" id="code">······</div>
+  <p class="muted">Введите этот код в мини-аппе на вкладке «Компьютер». Код постоянный для этого браузера.</p>
+  <button class="btn" id="start">Начать трансляцию звука</button>
+  <p class="err" id="err" hidden></p>
+  <div class="bars" id="bars"></div>
+  <p class="muted" id="state">Не запущено.</p>
+  <details>
+    <summary class="muted">Подсказки</summary>
+    <ol class="muted">
+      <li>В окне выбора выберите «Весь экран» и включите «Поделиться звуком» — тогда слышно всё, что играет на компьютере. Вкладка Chrome тоже подходит, но только её звук.</li>
+      <li>Не закрывайте эту вкладку, но её можно свернуть в отдельное окно: она работает в фоне.</li>
+      <li>Нужен Chrome или Edge на Windows. Firefox и Safari звук экрана не отдают.</li>
+    </ol>
+  </details>
+</div>
+<script type="module">
+import { startDisplay, canDisplay, makeCode, CODE_RE, wsUrl, dbToByte } from '/js/audio.js';
+
+const $ = (id) => document.getElementById(id);
+let code = '';
+try { code = localStorage.getItem('skycoder.hostcode') || ''; } catch {}
+if (!CODE_RE.test(code)) {
+  code = makeCode();
+  try { localStorage.setItem('skycoder.hostcode', code); } catch {}
+}
+$('code').textContent = code;
+
+const bars = $('bars');
+for (let i = 0; i < 10; i++) bars.appendChild(document.createElement('i'));
+const barEls = [...bars.children];
+
+if (!canDisplay()) {
+  $('start').disabled = true;
+  $('err').hidden = false;
+  $('err').textContent = 'Этот браузер не умеет захватывать звук экрана. Откройте страницу в Chrome или Edge на компьютере.';
+}
+
+let src = null, ws = null, ticker = null, viewers = 0, stopping = false;
+
+function setState() {
+  $('state').textContent = !src ? 'Не запущено.'
+    : `Транслирую звук. Подключено устройств: ${viewers}.`;
+}
+
+function openWs() {
+  ws = new WebSocket(wsUrl('host', code));
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = (e) => {
+    try { const m = JSON.parse(e.data); if (m.t === 'viewers') { viewers = m.n; setState(); } } catch {}
+  };
+  ws.onclose = (e) => {
+    if (stopping || e.code === 4001) {
+      if (e.code === 4001) { $('state').textContent = 'Эта комната открыта в другом окне — трансляция здесь остановлена.'; stop(true); }
+      return;
+    }
+    setTimeout(() => src && openWs(), 1500);
+  };
+}
+
+function stop(silent) {
+  stopping = true;
+  if (ticker) { ticker.terminate(); ticker = null; }
+  if (ws) { try { ws.close(); } catch {} ws = null; }
+  if (src) { try { src.stop(); } catch {} src = null; }
+  barEls.forEach((b) => (b.style.height = '2px'));
+  $('start').textContent = 'Начать трансляцию звука';
+  if (!silent) setState();
+}
+
+$('start').addEventListener('click', async () => {
+  if (src) return stop();
+  $('err').hidden = true;
+  try {
+    src = await startDisplay();
+  } catch (e) {
+    $('err').hidden = false;
+    $('err').textContent = e.name === 'NoAudioTrack'
+      ? 'Звук не выбран. Повторите: «Весь экран» и галочка «Поделиться звуком».'
+      : 'Захват не разрешён или отменён.';
+    return;
+  }
+  stopping = false;
+  src.onEnded = () => stop();
+  openWs();
+  $('start').textContent = 'Остановить';
+  setState();
+
+  const db = new Float32Array(10);
+  const pkt = new Uint8Array(10);
+  // таймер в Worker: вкладка в фоне не «душится» браузером, как requestAnimationFrame
+  ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),16)'], { type: 'text/javascript' })));
+  ticker.onmessage = () => {
+    if (!src) return;
+    src.read(db);
+    for (let i = 0; i < 10; i++) pkt[i] = dbToByte(db[i]);
+    if (ws && ws.readyState === 1) ws.send(pkt);
+    if (!document.hidden) barEls.forEach((b, i) => (b.style.height = Math.max(2, (pkt[i] / 255) * 70) + 'px'));
+  };
+});
+</script>
+</body>
+</html>

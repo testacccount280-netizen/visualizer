@@ -6,3 +6,10 @@ services:
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /health
+    envVars:
+      # Код общей комнаты: 6 символов A-Z0-9 (не секрет, можно оставить как есть)
+      - key: PUBLIC_ROOM
+        value: EFIR01
+      # Пароль передатчика: придумайте длинный. Render спросит его при создании.
+      - key: HOST_SECRET
+        sync: false

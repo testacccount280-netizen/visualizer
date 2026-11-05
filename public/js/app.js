@@ -1,6 +1,6 @@
 import { RINGS, MODES, THEMES } from './data.js';
 import { Visualizer, demoLevels, ringColor } from './engine.js';
-import { startMic, startDisplay, RelaySource, canMic, canDisplay, CODE_RE } from './audio.js';
+import { startMic, startDisplay, RelaySource, HostSender, verifyAdmin, makeCode, canMic, canDisplay, CODE_RE } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -20,8 +20,8 @@ if (tg) {
 const KEY = 'skycoder.v1';
 const DEFAULTS = {
   mode: 8, theme: 6, sens: 16, speed: 1, size: 1,
-  ag: { device: true, pc: true },
-  haptic: false, tab: 'device', code: '',
+  ag: { device: true, pc: true, host: true },
+  haptic: false, tab: 'device', code: '', hostCode: '',
 };
 let S = structuredClone(DEFAULTS);
 
@@ -34,6 +34,13 @@ function merge(raw) {
 let hadSaved = false; // были ли у пользователя сохранённые настройки (для выбора вкладки по умолчанию)
 try { hadSaved = !!localStorage.getItem(KEY); merge(localStorage.getItem(KEY)); } catch {}
 let PUB = null; // код общего эфира с сервера (/config)
+// Админ-пароль хранится только в этом браузере (не в облаке Telegram)
+const ADMIN_KEY = 'skycoder.admin';
+let admin = '';
+try { admin = localStorage.getItem(ADMIN_KEY) || ''; } catch {}
+const fixTab = () => { if (S.tab === 'host' && !admin) S.tab = 'device'; };
+if (!CODE_RE.test(S.hostCode)) { S.hostCode = makeCode(); }
+fixTab();
 
 const cloudOk = !!(tg && tg.CloudStorage && tg.isVersionAtLeast && tg.isVersionAtLeast('6.9') && inTg);
 function save() {
@@ -50,11 +57,12 @@ function applyParamCode() {
   if (CODE_RE.test(c)) { S.code = c; S.tab = 'pc'; save(); }
 }
 applyParamCode();
+save();
 
 if (cloudOk) {
   try {
     tg.CloudStorage.getItem(KEY, (err, val) => {
-      if (!err && val) { hadSaved = true; merge(val); applyParamCode(); applyAll(); autoConnectPc(); }
+      if (!err && val) { hadSaved = true; merge(val); if (!CODE_RE.test(S.hostCode)) S.hostCode = makeCode(); fixTab(); applyParamCode(); applyAll(); autoConnectPc(); }
     });
   } catch {}
 }
@@ -86,7 +94,9 @@ const lv = new Float32Array(10);
 
 /* ---------- источник звука ---------- */
 let src = null;
-let srcKind = null; // 'mic' | 'direct' | 'relay'
+let srcKind = null; // 'mic' | 'direct' | 'relay' | 'hostmic' | 'hostscreen'
+let sender = null; // HostSender при «Своём эфире»
+let hostState = { state: 'connecting', viewers: 0 };
 let relayState = 'connecting';
 let relaySince = 0;
 let userStoppedPc = false;
@@ -104,6 +114,8 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function stopSource() {
+  if (sender) { try { sender.stop(); } catch {} sender = null; }
+  renderTrack(null);
   if (src) { try { src.stop(); } catch {} }
   src = null;
   srcKind = null;
@@ -152,7 +164,7 @@ function connectRelay(code) {
     relayState = st;
     relaySince = st === 'connecting' ? relaySince || performance.now() : 0;
     render();
-  }), 'relay');
+  }, renderTrack), 'relay');
 }
 // куда подключаться на вкладке «Компьютер»: свой код, иначе общий эфир
 const pcTarget = () => (CODE_RE.test(S.code) ? S.code : PUB);
@@ -182,6 +194,105 @@ fetch('/config', { cache: 'no-store' })
     autoConnectPc();
   })
   .catch(() => {});
+
+/* ---------- что сейчас играет ---------- */
+const trackEl = $('track');
+let trackKey = '';
+function renderTrack(np) {
+  const key = np ? `${np.app}|${np.artist}|${np.title}` : '';
+  if (key === trackKey) return;
+  trackKey = key;
+  trackEl.textContent = '';
+  if (!np) { trackEl.hidden = true; return; }
+  const mk = (cls, text) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; trackEl.appendChild(d); };
+  if (np.app) mk('src', np.app);
+  mk('t', np.title);
+  if (np.artist) mk('a', np.artist);
+  trackEl.hidden = false;
+  trackEl.classList.remove('fresh');
+  void trackEl.offsetWidth;
+  trackEl.classList.add('fresh');
+}
+
+/* ---------- свой эфир (админ) ---------- */
+const HOST_ERR = {
+  replaced: 'Эфир с этим кодом уже идёт в другом окне, здесь он остановлен.',
+  blocked: 'Слишком много неверных попыток, подождите 15 минут.',
+  'no-secret-configured': 'На сервере не задан HOST_SECRET (Render → Environment).',
+};
+async function startHost(kind) {
+  showErr('errHost', '');
+  if (!admin) return showErr('errHost', 'Войдите как админ в настройках (⚙).');
+  const screen = kind === 'hostscreen';
+  if (screen ? !canDisplay() : !canMic()) {
+    return showErr('errHost', screen ? 'Захват звука экрана здесь недоступен (нужен Chrome/Edge на компьютере).' : 'Микрофон недоступен в этом окне (нужен HTTPS).');
+  }
+  let s;
+  try { s = screen ? await startDisplay() : await startMic(); } catch (e) { return showErr('errHost', errText(e, screen ? 'direct' : 'mic')); }
+  await useSource(s, kind);
+  hostState = { state: 'connecting', viewers: 0 };
+  sender = new HostSender(s, S.hostCode, admin, (st) => {
+    hostState = st;
+    if (st.state === 'error') {
+      const bad = !HOST_ERR[st.err];
+      if (bad) logoutAdmin();
+      stopSource();
+      showErr('errHost', HOST_ERR[st.err] || 'Неверный админ-пароль: войдите заново в настройках (⚙).');
+    }
+    render();
+  });
+  render();
+}
+$('btnHostMic').addEventListener('click', () => startHost('hostmic'));
+$('btnHostScreen').addEventListener('click', () => startHost('hostscreen'));
+$('btnHostScreen').hidden = !canDisplay();
+$('hostCode').textContent = S.hostCode;
+const copyText = async (btn, text) => {
+  const old = btn.textContent;
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Скопировано'; } catch { btn.textContent = 'Не вышло'; }
+  setTimeout(() => (btn.textContent = old), 1500);
+};
+$('copyHostCode').addEventListener('click', (e) => copyText(e.target, S.hostCode));
+$('copyHostLink').addEventListener('click', (e) => copyText(e.target, `${location.origin}/?code=${S.hostCode}`));
+
+const adminErr = $('adminErr');
+function adminMsg(text, bad) { adminErr.textContent = text || ''; adminErr.hidden = !text; adminErr.classList.toggle('err', !!bad); }
+function adminUi() {
+  $('adminOut').hidden = !!admin;
+  $('adminOn').hidden = !admin;
+  $('tabHost').hidden = !admin;
+}
+function logoutAdmin() {
+  admin = '';
+  try { localStorage.removeItem(ADMIN_KEY); } catch {}
+  if (S.tab === 'host') setTab('device');
+  adminUi();
+}
+$('adminIn').addEventListener('click', async () => {
+  const pw = $('adminPw').value;
+  if (!pw) return adminMsg('Введите админ-пароль.', true);
+  const b = $('adminIn');
+  b.disabled = true;
+  adminMsg('Проверяю… (если сервер спал, это до минуты)', false);
+  const r = await verifyAdmin(pw);
+  b.disabled = false;
+  if (r.ok) {
+    admin = pw;
+    try { localStorage.setItem(ADMIN_KEY, pw); } catch {}
+    $('adminPw').value = '';
+    adminMsg('', false);
+    adminUi();
+    toggleSheet(false);
+    setTab('host');
+  } else {
+    adminMsg(r.err === 'blocked' ? 'Слишком много попыток, подождите 15 минут.'
+      : r.err === 'no-secret-configured' ? 'На сервере не задан HOST_SECRET.'
+      : r.err === 'timeout' || r.err === 'network' || r.err === 'closed' ? 'Нет связи с сервером, попробуйте ещё раз.'
+      : 'Неверный админ-пароль.', true);
+  }
+});
+$('adminPw').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('adminIn').click(); });
+$('adminLogout').addEventListener('click', logoutAdmin);
 
 const codeIn = $('codeIn');
 codeIn.addEventListener('input', () => {
@@ -219,13 +330,16 @@ function setTab(t) {
 }
 $('tabDevice').addEventListener('click', () => setTab('device'));
 $('tabPc').addEventListener('click', () => setTab('pc'));
+$('tabHost').addEventListener('click', () => setTab('host'));
 
 function render() {
   const running = !!src;
   $('tabDevice').classList.toggle('on', S.tab === 'device');
   $('tabPc').classList.toggle('on', S.tab === 'pc');
+  $('tabHost').classList.toggle('on', S.tab === 'host');
   $('cardDevice').hidden = running || S.tab !== 'device';
   $('cardPc').hidden = running || S.tab !== 'pc';
+  $('cardHost').hidden = running || S.tab !== 'host';
   $('cardStop').hidden = !running;
   if (!running && S.code && !codeIn.value) codeIn.value = S.code;
   $('btnPub').hidden = !PUB;
@@ -240,6 +354,14 @@ function render() {
     dot = 'live'; text = '<b>Слушаю микрофон</b> этого устройства';
   } else if (srcKind === 'direct') {
     dot = 'live'; text = '<b>Звук этого компьютера</b> (захват экрана)';
+  } else if (srcKind === 'hostmic' || srcKind === 'hostscreen') {
+    if (hostState.state === 'live') {
+      dot = 'live';
+      text = `<b>Вы в эфире</b> · код ${S.hostCode} · зрителей: ${hostState.viewers || 0}`;
+    } else {
+      dot = 'warn';
+      text = 'Подключаюсь к серверу…';
+    }
   } else if (srcKind === 'relay') {
     const pub = !!PUB && src.code === PUB;
     if (relayState === 'live') {
@@ -331,6 +453,8 @@ function apply() {
   document.documentElement.style.setProperty('--acc', `rgb(${norm255(th.c).join(',')})`);
 }
 function applyAll() {
+  fixTab();
+  adminUi();
   apply();
   [...modeChips.children].forEach((c, i) => c.classList.toggle('on', i + 1 === S.mode));
   [...themeChips.children].forEach((c, i) => c.classList.toggle('on', i + 1 === S.theme));

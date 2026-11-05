@@ -129,9 +129,11 @@ export function makeCode() {
 
 // Приём полос с компьютера через релей
 export class RelaySource {
-  constructor(code, onStatus) {
+  constructor(code, onStatus, onNp) {
     this.code = code;
     this.onStatus = onStatus || (() => {});
+    this.onNp = onNp || (() => {});
+    this.np = null; // что сейчас играет: {title, artist, app} или null
     this.db = new Float32Array(BANDS).fill(-100);
     // Сеть доставляет пакеты неровно (по 2-3 сразу, потом пауза). Между кадрами копим максимум пакетов,
     // чтобы удар не терялся, если вслед за ним в тот же кадр пришёл более тихий пакет.
@@ -167,6 +169,9 @@ export class RelaySource {
           if (m.t === 'host') {
             this.hostOn = !!m.on;
             this.onStatus(this.hostOn ? 'live' : 'waiting');
+          } else if (m.t === 'np') {
+            this.np = m.title ? { title: String(m.title), artist: String(m.artist || ''), app: String(m.app || '') } : null;
+            this.onNp(this.np);
           } else if (m.t === 'pong' && typeof m.ts === 'number') {
             const r = performance.now() - m.ts;
             this.rtt = this.rtt == null ? r : this.rtt * 0.6 + r * 0.4;
@@ -192,6 +197,7 @@ export class RelaySource {
       clearInterval(this.pinger);
       if (this.closed) return;
       this.hostOn = false;
+      if (this.np) { this.np = null; this.onNp(null); }
       this.onStatus('connecting');
       setTimeout(() => this.open(), this.retry);
       this.retry = Math.min(this.retry * 1.6, 6000);
@@ -213,5 +219,87 @@ export class RelaySource {
     this.closed = true;
     clearInterval(this.pinger);
     try { this.ws.close(); } catch {}
+  }
+}
+
+// ---------- «Свой эфир»: передача уровней с этого устройства по админ-паролю ----------
+// Проверка пароля без запуска эфира: пробное подключение хостом в случайную комнату
+export function verifyAdmin(secret) {
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (r) => { if (!done) { done = true; try { ws.close(); } catch {} resolve(r); } };
+    const ws = new WebSocket(wsUrl('host', makeCode()));
+    const t = setTimeout(() => fin({ ok: false, err: 'timeout' }), 70000); // Render просыпается до минуты
+    ws.onopen = () => ws.send(JSON.stringify({ t: 'auth', secret }));
+    ws.onmessage = (e) => {
+      try {
+        const m = JSON.parse(e.data);
+        if (m.t === 'auth') { clearTimeout(t); fin({ ok: !!m.ok, err: m.err }); }
+      } catch {}
+    };
+    ws.onerror = () => { clearTimeout(t); fin({ ok: false, err: 'network' }); };
+    ws.onclose = () => { clearTimeout(t); fin({ ok: false, err: 'closed' }); };
+  });
+}
+
+export class HostSender {
+  // onState({state:'connecting'|'live'|'error', viewers, err})
+  constructor(src, code, secret, onState) {
+    this.src = src;
+    this.code = code;
+    this.secret = secret;
+    this.onState = onState || (() => {});
+    this.viewers = 0;
+    this.authed = false;
+    this.stopped = false;
+    this.pkt = new Uint8Array(BANDS);
+    this.db = new Float32Array(BANDS);
+    this.open();
+    // таймер в Worker: вкладка/окно в фоне не «душится» браузером, как requestAnimationFrame
+    this.ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),16)'], { type: 'text/javascript' })));
+    this.ticker.onmessage = () => {
+      if (this.stopped) return;
+      this.src.read(this.db);
+      for (let i = 0; i < BANDS; i++) this.pkt[i] = dbToByte(this.db[i]);
+      if (this.authed && this.ws && this.ws.readyState === 1) this.ws.send(this.pkt);
+    };
+  }
+
+  open() {
+    if (this.stopped) return;
+    this.authed = false;
+    this.onState({ state: 'connecting', viewers: this.viewers });
+    const ws = new WebSocket(wsUrl('host', this.code));
+    this.ws = ws;
+    ws.onopen = () => ws.send(JSON.stringify({ t: 'auth', secret: this.secret }));
+    ws.onmessage = (e) => {
+      try {
+        const m = JSON.parse(e.data);
+        if (m.t === 'viewers') { this.viewers = m.n; this.onState({ state: 'live', viewers: m.n }); }
+        else if (m.t === 'auth') {
+          if (m.ok) { this.authed = true; this.onState({ state: 'live', viewers: this.viewers }); }
+          else this.fail(m.err || 'bad');
+        }
+      } catch {}
+    };
+    ws.onclose = (e) => {
+      if (this.stopped || e.code === 4003) return;
+      if (e.code === 4001) return this.fail('replaced');
+      this.authed = false;
+      this.onState({ state: 'connecting', viewers: this.viewers });
+      setTimeout(() => this.open(), 1500);
+    };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+
+  fail(err) {
+    this.onState({ state: 'error', err });
+    this.stop();
+  }
+
+  stop() {
+    this.stopped = true;
+    if (this.ticker) { this.ticker.terminate(); this.ticker = null; }
+    try { this.ws && this.ws.close(); } catch {}
   }
 }

@@ -4,7 +4,8 @@
 // Общий эфир (для всех, кто открыл мини-апп):
 //   PUBLIC_ROOM = 6 символов A-Z0-9 (код общей комнаты)
 //   HOST_SECRET = пароль передатчика (без него в общую комнату транслировать нельзя)
-// Личные комнаты по коду работают как раньше, без пароля.
+// HOST_SECRET = «админ-пароль»: без него нельзя вести эфир ни в общей, ни в личной комнате.
+// Смотреть эфир может кто угодно.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,8 +24,8 @@ if (PUBLIC_ROOM && !ROOM_RE.test(PUBLIC_ROOM)) {
   PUBLIC_ROOM = '';
 }
 const HOST_SECRET = process.env.HOST_SECRET || '';
-if (PUBLIC_ROOM && !HOST_SECRET) {
-  console.warn('PUBLIC_ROOM задан, но HOST_SECRET пуст: транслировать в общий эфир будет нельзя');
+if (!HOST_SECRET) {
+  console.warn('HOST_SECRET пуст: вести эфир не сможет никто');
 }
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest();
 const secretOk = (given) => !!HOST_SECRET && crypto.timingSafeEqual(sha(given), sha(HOST_SECRET));
@@ -109,7 +110,7 @@ function getRoom(code) {
   let r = rooms.get(code);
   if (!r) {
     if (rooms.size >= MAX_ROOMS) return null;
-    r = { host: null, viewers: new Set() };
+    r = { host: null, viewers: new Set(), np: null };
     rooms.set(code, r);
   }
   return r;
@@ -130,17 +131,31 @@ function cleanup(code) {
 }
 const notifyHost = (r) => r.host && sendJson(r.host, { t: 'viewers', n: r.viewers.size });
 
+// «Сейчас играет»: хост шлёт {t:'np', title, artist, app}; пустой title = ничего не играет
+const clip = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n);
+function handleNp(r, data) {
+  let m;
+  try { m = JSON.parse(data.toString()); } catch { return; }
+  if (!m || m.t !== 'np') return;
+  const title = clip(m.title, 120);
+  r.np = title ? { t: 'np', title, artist: clip(m.artist, 80), app: clip(m.app, 24) } : null;
+  const out = r.np || { t: 'np', title: '' };
+  r.viewers.forEach((v) => sendJson(v, out));
+}
+
 function attachHost(ws, r, code) {
   if (r.host && r.host !== ws) {
     try { r.host.close(4001, 'replaced'); } catch {}
   }
   r.host = ws;
+  r.np = null;
   r.viewers.forEach((v) => sendJson(v, { t: 'host', on: true }));
   notifyHost(r);
   let bucket = 0, ts = Date.now();
   ws.on('message', (data, isBinary) => {
     if (handlePing(ws, data, isBinary)) return;
-    if (!isBinary || data.length < 10 || data.length > 32) return;
+    if (!isBinary) return handleNp(r, data);
+    if (data.length < 10 || data.length > 32) return;
     const now = Date.now(); // не больше ~120 пакетов/с
     if (now - ts > 1000) { ts = now; bucket = 0; }
     if (++bucket > 120) return;
@@ -161,7 +176,8 @@ function onConnect(ws, code, role, ip) {
     if (role === 'host') {
       if (r.host === ws) {
         r.host = null;
-        r.viewers.forEach((v) => sendJson(v, { t: 'host', on: false }));
+        r.np = null;
+        r.viewers.forEach((v) => { sendJson(v, { t: 'np', title: '' }); sendJson(v, { t: 'host', on: false }); });
       }
     } else {
       r.viewers.delete(ws);
@@ -171,8 +187,7 @@ function onConnect(ws, code, role, ip) {
   });
 
   if (role === 'host') {
-    if (code !== PUBLIC_ROOM) return attachHost(ws, r, code);
-    // общий эфир: хостом становятся только после пароля (первое сообщение)
+    // хостом становятся только после админ-пароля (первое сообщение)
     if (!HOST_SECRET) {
       sendJson(ws, { t: 'auth', ok: false, err: 'no-secret-configured' });
       return ws.close(4003, 'no secret configured');
@@ -203,6 +218,7 @@ function onConnect(ws, code, role, ip) {
     if (r.viewers.size >= max) return ws.close(1013, 'room full');
     r.viewers.add(ws);
     sendJson(ws, { t: 'host', on: !!r.host });
+    if (r.np) sendJson(ws, r.np);
     notifyHost(r);
     ws.on('message', (data, isBinary) => { handlePing(ws, data, isBinary); }); // зрители шлют только ping
   }

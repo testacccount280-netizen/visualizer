@@ -12,14 +12,16 @@
 <div id="app">
   <div class="top">
     <div class="seg" role="tablist">
-      <button id="tabDevice" role="tab">Это устройство</button>
+      <button id="tabDevice" role="tab">Устройство</button>
       <button id="tabPc" role="tab">Компьютер</button>
+      <button id="tabHost" role="tab" hidden>Мой эфир</button>
     </div>
     <button class="icon-btn" id="gear" aria-label="Настройки">⚙</button>
   </div>
 
   <div class="stage"><svg id="rings" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 388 388"></svg></div>
 
+  <div class="track" id="track" hidden></div>
   <div class="status" id="status"></div>
 
   <!-- Режим: звук этого устройства -->
@@ -49,6 +51,18 @@
     </details>
   </div>
 
+  <!-- Режим: свой эфир (только с админ-паролем) -->
+  <div class="card" id="cardHost" hidden>
+    <p>Ваш эфир с кодом <b class="hostcode" id="hostCode"></b>. Звук берётся с этого устройства, остальные смотрят по коду или ссылке.</p>
+    <p class="err" id="errHost" hidden></p>
+    <button class="btn" id="btnHostMic">Вести эфир с микрофона</button>
+    <button class="btn ghost" id="btnHostScreen" hidden>Вести эфир со звуком экрана</button>
+    <div class="row">
+      <button class="btn ghost" id="copyHostCode">Копировать код</button>
+      <button class="btn ghost" id="copyHostLink">Копировать ссылку</button>
+    </div>
+  </div>
+
   <div class="card" id="cardStop" hidden>
     <button class="btn" id="btnToPub" hidden>Перейти к общему эфиру</button>
     <button class="btn ghost" id="btnStop">Остановить</button>
@@ -69,6 +83,16 @@
     <input type="range" id="speed" min="0.2" max="3" step="0.1"></div>
   <div class="field"><label for="size">Размер</label><output id="sizeO"></output>
     <input type="range" id="size" min="0.5" max="1.2" step="0.05"></div>
+  <h3>Админ</h3>
+  <div class="admin" id="adminOut">
+    <input type="password" id="adminPw" class="admin-in" placeholder="Админ-пароль" autocomplete="off">
+    <button class="btn ghost" id="adminIn">Войти</button>
+  </div>
+  <div class="admin" id="adminOn" hidden>
+    <span class="tip" style="flex:1">Вы вошли как админ: доступна вкладка «Свой эфир».</span>
+    <button class="btn ghost" id="adminLogout">Выйти</button>
+  </div>
+  <p class="tip err" id="adminErr" hidden></p>
   <label class="switch"><span>Авто-усиление (подстраивается под громкость)</span><input type="checkbox" id="ag"></label>
   <label class="switch" id="hapticRow"><span>Вибрация на бит</span><input type="checkbox" id="haptic"></label>
 </div>

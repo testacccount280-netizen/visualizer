@@ -28,8 +28,8 @@
   <div id="pubBox" class="pub" hidden>
     <label><input type="radio" name="m" value="public" checked> Общий эфир: все, кто откроет мини-апп, видят ваш звук</label>
     <label><input type="radio" name="m" value="private"> Личная комната: только по коду</label>
-    <input type="password" id="secret" class="secret" placeholder="Секрет передачи (HOST_SECRET с Render)" autocomplete="off">
   </div>
+  <input type="password" id="secret" class="secret" placeholder="Админ-пароль (HOST_SECRET с Render)" autocomplete="off">
   <div id="noPub" class="pub" hidden>
     <b>Общий эфир не включён</b>
     <span class="muted">Сейчас слушать можно только по коду. Чтобы любой, кто откроет мини-апп, сразу слышал ваш звук без кода: на Render откройте сервис → <b>Environment</b> и добавьте <code>PUBLIC_ROOM</code> (любые 6 символов A–Z, 0–9, например EFIR01) и <code>HOST_SECRET</code> (ваш пароль передачи). После перезапуска обновите эту страницу.</span>
@@ -94,7 +94,6 @@ const isPublic = () => mode === 'public' && !!pubRoom;
 const room = () => (isPublic() ? pubRoom : code);
 function applyMode() {
   $('privBox').style.display = isPublic() ? 'none' : 'flex';
-  $('secret').style.display = isPublic() ? '' : 'none';
   document.querySelectorAll('input[name=m]').forEach((r) => (r.checked = r.value === (isPublic() ? 'public' : 'private')));
 }
 try { $('secret').value = localStorage.getItem('skycoder.hostsecret') || ''; } catch {}
@@ -119,7 +118,7 @@ applyMode();
 
 function setState() {
   $('state').textContent = !src ? 'Не запущено.'
-    : isPublic() && !authed ? 'Подключаюсь к общему эфиру…'
+    : !authed ? 'Подключаюсь…'
     : `Транслирую звук${isPublic() ? ' в общий эфир' : ''}. Подключено устройств: ${viewers}.`;
 }
 function fail(msg) {
@@ -130,11 +129,11 @@ function fail(msg) {
 }
 
 function openWs() {
-  authed = !isPublic();
+  authed = false;
   ws = new WebSocket(wsUrl('host', room()));
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    if (isPublic()) ws.send(JSON.stringify({ t: 'auth', secret: $('secret').value }));
+    ws.send(JSON.stringify({ t: 'auth', secret: $('secret').value }));
   };
   ws.onmessage = (e) => {
     try {
@@ -146,7 +145,7 @@ function openWs() {
           ? 'На сервере не задан HOST_SECRET. Добавьте его в Environment на Render и перезапустите сервис.'
           : m.err === 'blocked'
           ? 'Слишком много неверных попыток. Подождите 15 минут.'
-          : 'Неверный секрет передачи.');
+          : 'Неверный админ-пароль.');
       }
     } catch {}
   };
@@ -173,10 +172,8 @@ function stop(silent) {
 $('start').addEventListener('click', async () => {
   if (src) return stop();
   $('err').hidden = true;
-  if (isPublic()) {
-    if (!$('secret').value) { $('err').hidden = false; $('err').textContent = 'Введите секрет передачи (HOST_SECRET).'; return; }
-    try { localStorage.setItem('skycoder.hostsecret', $('secret').value); } catch {}
-  }
+  if (!$('secret').value) { $('err').hidden = false; $('err').textContent = 'Введите админ-пароль (HOST_SECRET).'; return; }
+  try { localStorage.setItem('skycoder.hostsecret', $('secret').value); } catch {}
   try {
     src = await startDisplay();
   } catch (e) {
